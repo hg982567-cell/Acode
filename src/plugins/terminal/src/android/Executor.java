@@ -282,10 +282,17 @@ public class Executor extends CordovaPlugin {
                     port = socket.getLocalPort();
                 }
 
-                ProcessServer server = new ProcessServer(port, cmd);
+                // Generate a cryptographically secure random token for authentication
+                String authToken = UUID.randomUUID().toString() + "-" + UUID.randomUUID().toString();
+
+                ProcessServer server = new ProcessServer(port, cmd, authToken);
                 server.startAndAwait(); // blocks until onStart() fires — server is listening before port is returned
 
-                callbackContext.success(port);
+                // Return both port and token as a JSON object
+                JSONObject result = new JSONObject();
+                result.put("port", port);
+                result.put("token", authToken);
+                callbackContext.success(result);
             } catch (Exception e) {
                 e.printStackTrace();
                 callbackContext.error("Failed to spawn process: " + e.getMessage());

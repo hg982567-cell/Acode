@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 class ProcessServer extends WebSocketServer {
 
     private final String[] cmd;
+    private final String authToken;
     private final CountDownLatch readyLatch = new CountDownLatch(1);
     private final AtomicReference<Exception> startError = new AtomicReference<>();
 
@@ -28,9 +29,10 @@ class ProcessServer extends WebSocketServer {
         }
     }
 
-    ProcessServer(int port, String[] cmd) {
+    ProcessServer(int port, String[] cmd, String authToken) {
         super(new InetSocketAddress("127.0.0.1", port));
         this.cmd = cmd;
+        this.authToken = authToken;
     }
 
     void startAndAwait() throws Exception {
@@ -58,6 +60,13 @@ class ProcessServer extends WebSocketServer {
 
     @Override
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
+        // Authenticate the connection by validating the token in the resource descriptor
+        String resource = handshake.getResourceDescriptor();
+        if (!isValidToken(resource)) {
+            conn.close(1008, "Unauthorized: invalid or missing authentication token");
+            return;
+        }
+
         try {
             Process process = new ProcessBuilder(cmd).redirectErrorStream(true).start();
             InputStream  stdout = process.getInputStream();
@@ -79,6 +88,51 @@ class ProcessServer extends WebSocketServer {
         } catch (Exception e) {
             conn.close(1011, "Failed to start process: " + e.getMessage());
         }
+    }
+
+    /**
+     * Validates that the WebSocket resource descriptor contains the correct authentication token.
+     * The token must be provided as a query parameter: /?token=<authToken>
+     */
+    private boolean isValidToken(String resource) {
+        if (resource == null || authToken == null) {
+            return false;
+        }
+        
+        // Extract query string from resource descriptor (e.g., "/?token=abc123")
+        int queryStart = resource.indexOf('?');
+        if (queryStart == -1) {
+            return false;
+        }
+        
+        String query = resource.substring(queryStart + 1);
+        String[] params = query.split("&");
+        
+        for (String param : params) {
+            String[] keyValue = param.split("=", 2);
+            if (keyValue.length == 2 && "token".equals(keyValue[0])) {
+                // Use constant-time comparison to prevent timing attacks
+                return constantTimeEquals(authToken, keyValue[1]);
+            }
+        }
+        
+        return false;
+    }
+
+    /**
+     * Constant-time string comparison to prevent timing attacks.
+     */
+    private boolean constantTimeEquals(String a, String b) {
+        if (a.length() != b.length()) {
+            return false;
+        }
+        
+        int result = 0;
+        for (int i = 0; i < a.length(); i++) {
+            result |= a.charAt(i) ^ b.charAt(i);
+        }
+        
+        return result == 0;
     }
 
     @Override

@@ -21,8 +21,12 @@ class Executor {
    *   process is ready. Use `ws.send()` to write to stdin and `ws.onmessage` to read stdout.
    */
   spawnStream(cmd, callback, onError) {
-    exec((port) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    exec((result) => {
+      // Result is now a JSON object with port and token
+      const { port, token } = result;
+      
+      // Include the authentication token as a query parameter
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/?token=${encodeURIComponent(token)}`);
       ws.binaryType = "arraybuffer";
 
       ws.onopen = () => {
