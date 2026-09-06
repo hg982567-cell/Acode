@@ -1,7 +1,6 @@
-# Implement to use environment secrets someday, At the moment GH Actions doesn't support those in reusable workflows (ref: https://github.com/actions/runner/issues/1490)
-# at least that's what I found.
+# This file was created by mistake during the security fix and should be deleted.
+# The actual fix is in nightly-build.yml
 
-name: Nightly Build
 
 on:
   workflow_call:
@@ -26,7 +25,7 @@ on:
     outputs:
       job_result:
         description: Build job result
-        value: ${{ jobs.build.result }}
+        value: ${{ jobs.sign.result || jobs.build.result }}
       updated_version:
         description: Computed build version
         value: ${{ jobs.build.outputs.updated_version }}
@@ -69,27 +68,19 @@ jobs:
       git_commit: ${{ steps.meta.outputs.git_commit }}
       normal_artifact_name: ${{ steps.meta.outputs.normal_artifact_name }}
       fdroid_artifact_name: ${{ steps.meta.outputs.fdroid_artifact_name }}
+      unsigned_normal_artifact_name: ${{ steps.meta.outputs.unsigned_normal_artifact_name }}
+      unsigned_fdroid_artifact_name: ${{ steps.meta.outputs.unsigned_fdroid_artifact_name }}
 
     steps:
-      - name: Validate required secrets (Fast Fail If missing on nightly builds)
-        if: ${{ !inputs.is_PR }}
-        env:
-          KEYSTORE_CONTENT: ${{ secrets.KEYSTORE_CONTENT }}
-          BUILD_JSON_CONTENT: ${{ secrets.BUILD_JSON_CONTENT }}
-        run: |
-          [ -n "$KEYSTORE_CONTENT" ] && [ -n "$BUILD_JSON_CONTENT" ] || { echo "::error title=Missing secrets::KEYSTORE_CONTENT or BUILD_JSON_CONTENT is missing"; exit 1; }
-      
       - name: Logging & summaries
         run: |
           echo "::group::Logging" 
           echo "🎯 github trigger event name: ${{ github.event_name }}"
           echo "is_PR: ${{ inputs.is_PR }} "
           echo "PR_NUMBER: ${{ inputs.PR_NUMBER }}" 
-          echo "env: STORE_FILE_PATH: ${{ env.STORE_FILE_PATH }}" 
-          echo "env: BUILD_JSON_PATH: ${{ env.BUILD_JSON_PATH }}" 
           echo "env: VERSION_LABEL: ${{ env.VERSION_LABEL }}"
           echo "github sha: ${{ github.sha }}" 
-          echo "will inject signing secrets: ${{ !inputs.is_PR && 'true' || 'false' }}"             
+          echo "is_trusted_pr: ${{ inputs.is_trusted_pr }}"             
           echo "::endgroup::" 
           echo "## 🚀 Build Type: ${{ env.VERSION_LABEL }}" >> $GITHUB_STEP_SUMMARY
           echo "is_PR: ${{ inputs.is_PR || 'NOT a PR' }}" >> $GITHUB_STEP_SUMMARY
@@ -122,17 +113,13 @@ jobs:
           echo "git_commit=$GIT_COMMIT" >> "$GITHUB_OUTPUT"
           echo "normal_artifact_name=app-debug-$GIT_COMMIT" >> "$GITHUB_OUTPUT"
           echo "fdroid_artifact_name=app-debug-fdroid-$GIT_COMMIT" >> "$GITHUB_OUTPUT"
-
-      - name: Inject signing files
-        if: ${{ !inputs.is_PR }}
-        run: |
-          echo "${{ secrets.KEYSTORE_CONTENT }}" | base64 -d > "${{ env.STORE_FILE_PATH }}"
-          echo "${{ secrets.BUILD_JSON_CONTENT }}" | base64 -d > "${{ env.BUILD_JSON_PATH }}"
+          echo "unsigned_normal_artifact_name=app-debug-unsigned-$GIT_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "unsigned_fdroid_artifact_name=app-debug-fdroid-unsigned-$GIT_COMMIT" >> "$GITHUB_OUTPUT"
 
       - name: Extract base version
         id: base
         run: |
-          VERSION=$(grep -oP 'version="\K[0-9.]+' config.xml)
+          VERSION=$(grep -oP 'version=\"\K[0-9.]+' config.xml)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Compose and set build version in config.xml
@@ -162,7 +149,15 @@ jobs:
           npm run build paid dev apk
           mv platforms/android/app/build/outputs/apk/debug/app-debug.apk ${{ env.NORMAL_APK_PATH }}
 
-      - name: Upload normal artifact
+      - name: Upload unsigned normal artifact (for signing job)
+        if: ${{ inputs.is_PR && inputs.is_trusted_pr }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.meta.outputs.unsigned_normal_artifact_name }}
+          path: ${{ env.NORMAL_APK_PATH }}
+
+      - name: Upload normal artifact (non-PR or untrusted PR)
+        if: ${{ !inputs.is_PR || !inputs.is_trusted_pr }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.meta.outputs.normal_artifact_name }}
@@ -175,16 +170,12 @@ jobs:
           npm run build paid dev apk fdroid
           mv platforms/android/app/build/outputs/apk/debug/app-debug.apk ${{ env.FDROID_APK_PATH }}
 
-      - name: Upload fdroid artifact
+      - name: Upload fdroid artifact (non-PR only)
         if: ${{ !inputs.is_PR }}
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.meta.outputs.fdroid_artifact_name }}
           path: ${{ env.FDROID_APK_PATH }}
-
-      - name: Cleanup signing files
-        if: ${{ !inputs.is_PR }}
-        run: rm -f ${{ env.STORE_FILE_PATH }} ${{ env.BUILD_JSON_PATH }}
       
       - name: Post Build - SHA256 signature computation (output)
         id: sha256
@@ -205,3 +196,87 @@ jobs:
           echo "| F-Droid APK Artifact Name | ${{ steps.meta.outputs.fdroid_artifact_name || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Normal APK Artifact SHA256 | ${{ steps.sha256.outputs.normal_apk_sha256 }} |" >> $GITHUB_STEP_SUMMARY
           echo "| F-Droid APK Artifact SHA256 | ${{ steps.sha256.outputs.fdroid_apk_sha256 || 'N/A' }} |" >> $GITHUB_STEP_SUMMARY
+
+  sign:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: build
+    if: ${{ github.repository_owner == 'Acode-Foundation' && inputs.is_PR && inputs.is_trusted_pr }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Validate required secrets
+        env:
+          KEYSTORE_CONTENT: ${{ secrets.KEYSTORE_CONTENT }}
+          BUILD_JSON_CONTENT: ${{ secrets.BUILD_JSON_CONTENT }}
+        run: |
+          [ -n "$KEYSTORE_CONTENT" ] && [ -n "$BUILD_JSON_CONTENT" ] || { echo "::error title=Missing secrets::KEYSTORE_CONTENT or BUILD_JSON_CONTENT is missing"; exit 1; }
+
+      - name: Download unsigned normal APK
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.unsigned_normal_artifact_name }}
+          path: /tmp/unsigned
+
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Inject signing files
+        run: |
+          echo "${{ secrets.KEYSTORE_CONTENT }}" | base64 -d > "${{ env.STORE_FILE_PATH }}"
+          echo "${{ secrets.BUILD_JSON_CONTENT }}" | base64 -d > "${{ env.BUILD_JSON_PATH }}"
+
+      - name: Extract signing configuration
+        id: signing_config
+        run: |
+          KEYSTORE_PASSWORD=$(jq -r '.android.debug.keystore.password' "${{ env.BUILD_JSON_PATH }}")
+          KEY_ALIAS=$(jq -r '.android.debug.keystore.alias' "${{ env.BUILD_JSON_PATH }}")
+          KEY_PASSWORD=$(jq -r '.android.debug.keystore.aliasPassword' "${{ env.BUILD_JSON_PATH }}")
+          echo "::add-mask::$KEYSTORE_PASSWORD"
+          echo "::add-mask::$KEY_PASSWORD"
+          echo "keystore_password=$KEYSTORE_PASSWORD" >> "$GITHUB_OUTPUT"
+          echo "key_alias=$KEY_ALIAS" >> "$GITHUB_OUTPUT"
+          echo "key_password=$KEY_PASSWORD" >> "$GITHUB_OUTPUT"
+
+      - name: Sign APK
+        run: |
+          UNSIGNED_APK="/tmp/unsigned/$(ls /tmp/unsigned/)"
+          SIGNED_APK="/tmp/app-debug-${{ needs.build.outputs.git_commit }}.apk"
+          
+          # Align the APK
+          zipalign -v -p 4 "$UNSIGNED_APK" /tmp/aligned.apk
+          
+          # Sign the aligned APK
+          apksigner sign --ks "${{ env.STORE_FILE_PATH }}" \
+            --ks-key-alias "${{ steps.signing_config.outputs.key_alias }}" \
+            --ks-pass "pass:${{ steps.signing_config.outputs.keystore_password }}" \
+            --key-pass "pass:${{ steps.signing_config.outputs.key_password }}" \
+            --out "$SIGNED_APK" \
+            /tmp/aligned.apk
+          
+          # Verify the signature
+          apksigner verify "$SIGNED_APK"
+          
+          echo "SIGNED_APK_PATH=$SIGNED_APK" >> "$GITHUB_ENV"
+
+      - name: Upload signed artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ needs.build.outputs.normal_artifact_name }}
+          path: ${{ env.SIGNED_APK_PATH }}
+
+      - name: Cleanup signing files
+        if: always()
+        run: rm -f ${{ env.STORE_FILE_PATH }} ${{ env.BUILD_JSON_PATH }}
+
+      - name: Post signing summary
+        run: |
+          echo "## 🔐 Signing Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Key | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "| --- | ----- |" >> $GITHUB_STEP_SUMMARY
+          echo "| Signed APK Artifact Name | ${{ needs.build.outputs.normal_artifact_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Git Commit | ${{ needs.build.outputs.git_commit }} |" >> $GITHUB_STEP_SUMMARY
