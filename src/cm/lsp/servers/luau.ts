@@ -143,6 +143,15 @@ export const luauBundle: LspServerBundle = defineBundle({
 				throw new Error("Luau bundle is missing release metadata");
 			}
 
+			// Validate GitHub repository format to prevent shell injection
+			const githubRepoPattern = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
+			if (!githubRepoPattern.test(repo)) {
+				throw new Error(
+					`Invalid GitHub repository format: "${repo}". ` +
+					`Expected format: owner/repository with alphanumeric characters, hyphens, underscores, and periods only.`
+				);
+			}
+
 			const label = manifest.label || "Luau";
 			const actionLabel = mode === "update" ? "Update" : "Install";
 
