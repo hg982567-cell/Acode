@@ -31,7 +31,11 @@ public class Tee extends CordovaPlugin {
     // token : list of permissions
     private /*static*/ final Map<String, List<String>> permissionStore = new ConcurrentHashMap<>();
 
-
+    // Track plugins currently being initialized (pluginId : timestamp)
+    private /*static*/ final Map<String, Long> initializingPlugins = new ConcurrentHashMap<>();
+    
+    // Maximum time a plugin can remain in "initializing" state (30 seconds)
+    private static final long INITIALIZATION_TIMEOUT_MS = 30_000;
 
     private Context context;
 
@@ -86,6 +90,11 @@ public class Tee extends CordovaPlugin {
             return true;
         }
 
+        if ("registerPlugin".equals(action)) {
+            String pluginId = args.getString(0);
+            handlePluginRegistration(pluginId, callback);
+            return true;
+        }
 
         if ("requestToken".equals(action)) {
             String pluginId = args.getString(0);
@@ -161,11 +170,38 @@ public class Tee extends CordovaPlugin {
     //============================================================
 
 
+    private synchronized void handlePluginRegistration(
+            String pluginId,
+            CallbackContext callback
+    ) {
+        // Clean up any stale registrations
+        cleanupStaleRegistrations();
+        
+        // Register this plugin as currently initializing
+        initializingPlugins.put(pluginId, System.currentTimeMillis());
+        callback.success();
+    }
+
+    private void cleanupStaleRegistrations() {
+        long now = System.currentTimeMillis();
+        initializingPlugins.entrySet().removeIf(entry -> 
+            now - entry.getValue() > INITIALIZATION_TIMEOUT_MS
+        );
+    }
+
     private synchronized void handleTokenRequest(
             String pluginId,
             String pluginJson,
             CallbackContext callback
     ) {
+        // Clean up any stale registrations
+        cleanupStaleRegistrations();
+        
+        // Verify that this plugin is currently being initialized
+        if (!initializingPlugins.containsKey(pluginId)) {
+            callback.error("PLUGIN_NOT_REGISTERED");
+            return;
+        }
 
         if (disclosed.contains(pluginId)) {
             callback.error("TOKEN_ALREADY_ISSUED");
@@ -200,6 +236,10 @@ public class Tee extends CordovaPlugin {
         }
 
         disclosed.add(pluginId);
+        
+        // Remove from initializing plugins after successful token issuance
+        initializingPlugins.remove(pluginId);
+        
         callback.success(token);
     }
 }

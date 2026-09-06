@@ -68,7 +68,13 @@ const PluginContext = (function () {
   return {
     generate: async function (pluginId, pluginJson) {
       try {
-        function requestToken(pluginId) {
+        function registerPlugin(pluginId) {
+          return new Promise((resolve, reject) => {
+            exec(resolve, reject, "Tee", "registerPlugin", [pluginId]);
+          });
+        }
+
+        function requestToken(pluginId, pluginJson) {
           return new Promise((resolve, reject) => {
             exec(resolve, reject, "Tee", "requestToken", [
               pluginId,
@@ -77,7 +83,11 @@ const PluginContext = (function () {
           });
         }
 
-        const uuid = await requestToken(pluginId);
+        // First register the plugin as currently initializing
+        await registerPlugin(pluginId);
+        
+        // Then request the token
+        const uuid = await requestToken(pluginId, pluginJson);
         return new _PluginContext(uuid);
       } catch (err) {
         console.warn(`PluginContext creation failed for pluginId ${pluginId}:`, err);
