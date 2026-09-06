@@ -324,6 +324,28 @@ function getInstallCacheKey(server: LspServerDefinition): string | null {
   return `${server.id}:${checkCommand}`;
 }
 
+/**
+ * Validates that a GitHub repository string follows the owner/repository format
+ * and contains only safe characters to prevent shell injection.
+ * 
+ * GitHub repository names can contain:
+ * - Alphanumeric characters (a-z, A-Z, 0-9)
+ * - Hyphens (-)
+ * - Underscores (_)
+ * - Periods (.)
+ * 
+ * The format must be: owner/repository
+ */
+function isValidGitHubRepo(repo: string): boolean {
+  if (!repo || typeof repo !== "string") return false;
+  
+  // GitHub repo format: owner/repository
+  // Both owner and repository must contain only safe characters
+  const githubRepoPattern = /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/;
+  
+  return githubRepoPattern.test(repo);
+}
+
 function normalizeInstallSpec(server: LspServerDefinition) {
   const install = server.launcher?.install;
   if (!install) return null;
@@ -342,6 +364,21 @@ function normalizeInstallSpec(server: LspServerDefinition) {
     (install.source === "cargo" ? "cargo" : null) ||
     (install.command ? "shell" : null) ||
     "shell";
+
+  // Validate and normalize repo field
+  let normalizedRepo: string | undefined = undefined;
+  if (typeof install.repo === "string" && install.repo.trim()) {
+    const trimmedRepo = install.repo.trim();
+    if (isValidGitHubRepo(trimmedRepo)) {
+      normalizedRepo = trimmedRepo;
+    } else {
+      console.warn(
+        `Invalid GitHub repository format for ${server.id}: "${trimmedRepo}". ` +
+        `Expected format: owner/repository with alphanumeric characters, hyphens, underscores, and periods only.`
+      );
+      normalizedRepo = undefined;
+    }
+  }
 
   return {
     ...install,
@@ -366,10 +403,7 @@ function normalizeInstallSpec(server: LspServerDefinition) {
       typeof install.binaryPath === "string" && install.binaryPath.trim()
         ? install.binaryPath.trim()
         : undefined,
-    repo:
-      typeof install.repo === "string" && install.repo.trim()
-        ? install.repo.trim()
-        : undefined,
+    repo: normalizedRepo,
     assetNames:
       install.assetNames && typeof install.assetNames === "object"
         ? Object.fromEntries(
